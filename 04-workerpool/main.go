@@ -59,7 +59,7 @@ func main() {
 		}
 	}()
 
-	for i := 0; i < len(portsToScan); i++ {
+	for range portsToScan {
 		if p := <-resultsChan; p != 0 { // non-zero port means it's open
 			openPorts = append(openPorts, p)
 		}
