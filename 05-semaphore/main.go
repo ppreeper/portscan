@@ -32,7 +32,6 @@ func init() {
 
 func main() {
 	flag.Parse()
-	fmt.Println("ports", ports)
 
 	portsToScan, err := parsePortsToScan(ports)
 	if err != nil {

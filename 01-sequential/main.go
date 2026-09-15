@@ -27,7 +27,6 @@ func init() {
 
 func main() {
 	flag.Parse()
-	fmt.Println("ports", ports)
 
 	portsToScan, err := parsePortsToScan(ports)
 	if err != nil {
@@ -36,7 +35,6 @@ func main() {
 	}
 
 	for _, p := range portsToScan {
-		// fmt.Println(p)
 		conn, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", p)))
 		if err != nil {
 			log.Printf("%d CLOSED (%s)\n", p, err)
