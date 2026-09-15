@@ -2,30 +2,43 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sync/semaphore"
 )
 
-var host string
-var ports string
+var (
+	host    string
+	ports   string
+	workers int
+	timeout int
+	outFile string
+)
 
 func init() {
 	flag.StringVar(&host, "host", "127.0.0.1", "Host to scan.")
-	flag.StringVar(&ports, "ports", "80", "Port(s) (e.g. 80, 22-100).")
+	flag.StringVar(&ports, "ports", "", "Port(s) (e.g. 80,22-100) (no spaces).")
+	flag.IntVar(&timeout, "timeout", 5, "Timeout in seconds (default is 5).")
+	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of workers (defaults to # of logical CPUs).")
+	flag.StringVar(&outFile, "outfile", "scans.csv", "Destination of scan results (defaults to scans.csv)")
 }
 
 func main() {
 	flag.Parse()
+	fmt.Println("ports", ports)
+
+	portsToScan, err := parsePortsToScan(ports)
+	if err != nil {
+		fmt.Printf("Failed to parse ports to scan: %s\n", err)
+		os.Exit(1)
+	}
 
 	var openPorts []int
 
@@ -36,12 +49,6 @@ func main() {
 		printResults(openPorts)
 		os.Exit(0)
 	}()
-
-	portsToScan, err := parsePortsToScan(ports)
-	if err != nil {
-		fmt.Printf("Failed to parse ports to scan: %s\n", err)
-		os.Exit(1)
-	}
 
 	var semMaxWeight int64 = 100_000
 	var semAcquisitionWeight int64 = 100
@@ -72,40 +79,8 @@ func main() {
 	printResults(openPorts)
 }
 
-func parsePortsToScan(portsFlag string) ([]int, error) {
-	p, err := strconv.Atoi(portsFlag)
-	if err == nil {
-		return []int{p}, nil
-	}
-
-	ports := strings.Split(portsFlag, "-")
-	if len(ports) != 2 {
-		return nil, errors.New("unable to determine port(s) to scan")
-	}
-
-	minPort, err := strconv.Atoi(ports[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[0])
-	}
-
-	maxPort, err := strconv.Atoi(ports[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[1])
-	}
-
-	if minPort <= 0 || maxPort <= 0 {
-		return nil, fmt.Errorf("port numbers must be greater than 0")
-	}
-
-	var results []int
-	for p := minPort; p <= maxPort; p++ {
-		results = append(results, p)
-	}
-	return results, nil
-}
-
 func scan(host string, port int) int {
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		fmt.Printf("%d CLOSED (%s)\n", port, err)

@@ -2,27 +2,35 @@ package main
 
 import (
 	"encoding/csv"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
-	"strings"
 	"time"
 )
 
-var ports string
-var outFile string
+var (
+	host    string
+	ports   string
+	workers int
+	timeout int
+	outFile string
+)
 
 func init() {
-	flag.StringVar(&ports, "ports", "5400-5500", "Port(s) (e.g. 80, 22-100).")
+	flag.StringVar(&host, "host", "127.0.0.1", "Host to scan.")
+	flag.StringVar(&ports, "ports", "", "Port(s) (e.g. 80,22-100) (no spaces).")
+	flag.IntVar(&timeout, "timeout", 5, "Timeout in seconds (default is 5).")
+	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of workers (defaults to # of logical CPUs).")
 	flag.StringVar(&outFile, "outfile", "scans.csv", "Destination of scan results (defaults to scans.csv)")
 }
 
 func main() {
 	flag.Parse()
+	fmt.Println("ports", ports)
 
 	portsToScan, err := parsePortsToScan(ports)
 	if err != nil {
@@ -50,45 +58,14 @@ func main() {
 	// scanChan = store(dest, scanChan)
 
 	for s := range scanChan {
-		if !s.open && s.scanErr != fmt.Sprintf("dial tcp 127.0.0.1:%d: connect: connection refused", s.port) {
+		if !s.open && s.scanErr != fmt.Sprintf("dial tcp %s:%d: connect: connection refused", s.host, s.port) {
 			fmt.Println(s.scanErr)
 		}
 	}
 }
 
-func parsePortsToScan(portsFlag string) ([]int, error) {
-	p, err := strconv.Atoi(portsFlag)
-	if err == nil {
-		return []int{p}, nil
-	}
-
-	ports := strings.Split(portsFlag, "-")
-	if len(ports) != 2 {
-		return nil, errors.New("unable to determine port(s) to scan")
-	}
-
-	minPort, err := strconv.Atoi(ports[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[0])
-	}
-
-	maxPort, err := strconv.Atoi(ports[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[1])
-	}
-
-	if minPort <= 0 || maxPort <= 0 {
-		return nil, fmt.Errorf("port numbers must be greater than 0")
-	}
-
-	var results []int
-	for p := minPort; p <= maxPort; p++ {
-		results = append(results, p)
-	}
-	return results, nil
-}
-
 type scanOp struct {
+	host         string
 	port         int
 	open         bool
 	scanErr      string
@@ -96,7 +73,7 @@ type scanOp struct {
 }
 
 func (so scanOp) csvHeaders() []string {
-	return []string{"port", "open", "scanError", "scanDuration"}
+	return []string{"host", "port", "open", "scanError", "scanDuration"}
 }
 
 func (so scanOp) asSlice() []string {
@@ -124,7 +101,7 @@ func scan(in <-chan scanOp) <-chan scanOp {
 	go func() {
 		defer close(out)
 		for scan := range in {
-			address := fmt.Sprintf("127.0.0.1:%d", scan.port)
+			address := net.JoinHostPort(scan.host, fmt.Sprintf("%d", scan.port))
 			start := time.Now()
 			conn, err := net.Dial("tcp", address)
 			scan.scanDuration = time.Since(start)

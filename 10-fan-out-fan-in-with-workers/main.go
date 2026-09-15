@@ -1,28 +1,35 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-var ports string
-var workers int
+var (
+	host    string
+	ports   string
+	workers int
+	timeout int
+	outFile string
+)
 
 func init() {
-	flag.StringVar(&ports, "ports", "5400-5500", "Port(s) (e.g. 80, 22-100).")
+	flag.StringVar(&host, "host", "127.0.0.1", "Host to scan.")
+	flag.StringVar(&ports, "ports", "", "Port(s) (e.g. 80,22-100) (no spaces).")
+	flag.IntVar(&timeout, "timeout", 5, "Timeout in seconds (default is 5).")
 	flag.IntVar(&workers, "workers", runtime.NumCPU(), "Number of workers (defaults to # of logical CPUs).")
+	flag.StringVar(&outFile, "outfile", "scans.csv", "Destination of scan results (defaults to scans.csv)")
 }
 
 func main() {
 	flag.Parse()
+	fmt.Println("ports", ports)
 
 	portsToScan, err := parsePortsToScan(ports)
 	if err != nil {
@@ -36,7 +43,7 @@ func main() {
 	done := make(chan struct{})
 	defer close(done)
 
-	in := gen(done, portsToScan...)
+	in := gen(done, host, portsToScan...)
 
 	// fan-out
 	var chans []<-chan scanOp
@@ -44,9 +51,9 @@ func main() {
 		chans = append(chans, scan(done, in))
 	}
 
-	// for s := range filterOpen(done, merge(done, chans...)) {
-	// 	fmt.Printf("%#v\n", s)
-	// }
+	for s := range filterOpen(done, merge(done, chans...)) {
+		fmt.Printf("%#v\n", s)
+	}
 
 	for s := range filterErr(done, merge(done, chans...)) {
 		fmt.Printf("%#v\n", s)
@@ -57,52 +64,21 @@ func main() {
 	// done chan is closed by the deferred call here
 }
 
-func parsePortsToScan(portsFlag string) ([]int, error) {
-	p, err := strconv.Atoi(portsFlag)
-	if err == nil {
-		return []int{p}, nil
-	}
-
-	ports := strings.Split(portsFlag, "-")
-	if len(ports) != 2 {
-		return nil, errors.New("unable to determine port(s) to scan")
-	}
-
-	minPort, err := strconv.Atoi(ports[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[0])
-	}
-
-	maxPort, err := strconv.Atoi(ports[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert %s to a valid port number", ports[1])
-	}
-
-	if minPort <= 0 || maxPort <= 0 {
-		return nil, fmt.Errorf("port numbers must be greater than 0")
-	}
-
-	var results []int
-	for p := minPort; p <= maxPort; p++ {
-		results = append(results, p)
-	}
-	return results, nil
-}
-
 type scanOp struct {
+	host         string
 	port         int
 	open         bool
 	scanErr      string
 	scanDuration time.Duration
 }
 
-func gen(done <-chan struct{}, ports ...int) <-chan scanOp {
+func gen(done <-chan struct{}, host string, ports ...int) <-chan scanOp {
 	out := make(chan scanOp, len(ports))
 	go func() {
 		defer close(out)
 		for _, p := range ports {
 			select {
-			case out <- scanOp{port: p}:
+			case out <- scanOp{host: host, port: p}:
 			case <-done:
 				return
 			}
@@ -118,7 +94,7 @@ func scan(done <-chan struct{}, in <-chan scanOp) <-chan scanOp {
 		for scan := range in {
 			select {
 			default:
-				address := fmt.Sprintf("127.0.0.1:%d", scan.port)
+				address := net.JoinHostPort(scan.host, fmt.Sprintf("%d", scan.port))
 				start := time.Now()
 				conn, err := net.Dial("tcp", address)
 				scan.scanDuration = time.Since(start)
