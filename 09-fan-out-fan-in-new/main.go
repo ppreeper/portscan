@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"runtime"
-	"strconv"
+	"sync"
 	"time"
 )
 
@@ -37,29 +35,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	dest, err := os.Create(outFile)
-	if err != nil {
-		fmt.Printf("Failed to create scan results destination: %s\n", err)
-		os.Exit(2)
-	}
+	in := gen(host, portsToScan...)
 
-	// pipeline
-	scanChan := store(dest, filter(scan(gen(host, portsToScan...))))
+	// fan-out
+	sc1 := scan(in)
+	sc2 := scan(in)
+	sc3 := scan(in)
 
-	// unfiltered
-	// scanChan := store(dest, scan(gen(portsToScan...)))
-
-	// broken up for explainability
-	// var scanChan <-chan scanOp
-	// scanChan = gen(portsToScan...)
-	// scanChan = scan(scanChan)
-	// scanChan = filter(scanChan)
-	// scanChan = store(dest, scanChan)
-
-	for s := range scanChan {
-		if !s.open && s.scanErr != fmt.Sprintf("dial tcp %s:%d: connect: connection refused", s.host, s.port) {
-			fmt.Println(s.scanErr)
-		}
+	for s := range filter(merge(sc1, sc2, sc3)) {
+		// for s := range merge(sc1, sc2, sc3) {
+		fmt.Printf("%#v\n", s)
 	}
 }
 
@@ -71,28 +56,12 @@ type scanOp struct {
 	scanDuration time.Duration
 }
 
-func (so scanOp) csvHeaders() []string {
-	return []string{"host", "port", "open", "scanError", "scanDuration"}
-}
-
-func (so scanOp) asSlice() []string {
-	return []string{
-		so.host,
-		strconv.FormatInt(int64(so.port), 10),
-		strconv.FormatBool(so.open),
-		so.scanErr,
-		so.scanDuration.String(),
-	}
-}
-
 func gen(host string, ports ...int) <-chan scanOp {
 	out := make(chan scanOp, len(ports))
-	go func() {
-		defer close(out)
-		for _, p := range ports {
-			out <- scanOp{host: host, port: p}
-		}
-	}()
+	for _, p := range ports {
+		out <- scanOp{host: host, port: p}
+	}
+	close(out)
 	return out
 }
 
@@ -130,28 +99,24 @@ func filter(in <-chan scanOp) <-chan scanOp {
 	return out
 }
 
-func store(file io.Writer, in <-chan scanOp) <-chan scanOp {
-	csvWriter := csv.NewWriter(file)
+func merge(chans ...<-chan scanOp) <-chan scanOp {
 	out := make(chan scanOp)
+	wg := sync.WaitGroup{}
+	// wg.Add(len(chans))
+
+	for _, sc := range chans {
+		wg.Go(func() {
+			// sc <- chan scanOp
+			for scan := range sc {
+				out <- scan
+			}
+		})
+	}
+
 	go func() {
-		defer csvWriter.Flush()
-		defer close(out)
-		var headerWritten bool
-		for scan := range in {
-			if !headerWritten {
-				headers := scan.csvHeaders()
-				if err := csvWriter.Write(headers); err != nil {
-					fmt.Println(err)
-					break
-				}
-				headerWritten = true
-			}
-			values := scan.asSlice()
-			if err := csvWriter.Write(values); err != nil {
-				fmt.Println(err)
-				break
-			}
-		}
+		wg.Wait()
+		close(out)
 	}()
+
 	return out
 }
